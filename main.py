@@ -1,10 +1,9 @@
 import os
-import time
-import random
-import re
-import mimetypes
 import pandas as pd
 import requests
+import mimetypes
+import time
+import random
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -12,11 +11,10 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
 
-# --- Налаштування ---
 SCOPES = ['https://www.googleapis.com/auth/drive']
-ROOT_FOLDER_ID = '15TAAvPHbjBtv56u83dQ_v0cVpusTuzAG'  # ID папки "Фотобанк Jerelia"
+ROOT_FOLDER_ID = '15TAAvPHbjBtv56u83dQ_v0cVpusTuzAG'
 
-# --- Авторизація ---
+
 def authenticate():
     creds = None
     if os.path.exists('token.json'):
@@ -28,15 +26,14 @@ def authenticate():
             token.write(creds.to_json())
     return build('drive', 'v3', credentials=creds)
 
-# --- Безпечне ім’я папки для запиту ---
-def escape_for_query(name):
-    return name.replace("'", "\\'").replace('"', '')
 
-# --- Пошук або створення папки бренду ---
+def safe_name(text):
+    return ''.join(c for c in text if c.isalnum() or c in ' ._-').strip()
+
+
 def get_or_create_folder(service, name, parent_id):
-    safe_name = escape_for_query(name)
     query = (
-        f"name='{safe_name}' and mimeType='application/vnd.google-apps.folder' "
+        f"name='{name}' and mimeType='application/vnd.google-apps.folder' "
         f"and '{parent_id}' in parents and trashed = false"
     )
     response = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
@@ -52,28 +49,31 @@ def get_or_create_folder(service, name, parent_id):
         folder = service.files().create(body=metadata, fields='id').execute()
         return folder['id']
 
-# --- Перевірка чи файл уже існує ---
+
 def file_exists(service, folder_id, filename):
     query = (
-        f"name='{escape_for_query(filename)}' and '{folder_id}' in parents and trashed = false"
+        f"name = '{filename}' and "
+        f"'{folder_id}' in parents and "
+        f"mimeType != 'application/vnd.google-apps.folder' and trashed = false"
     )
     response = service.files().list(q=query, fields='files(id)', spaces='drive').execute()
     return bool(response.get('files'))
 
-# --- Завантаження фото і створення файлу на Google Drive ---
-def upload_image(service, folder_id, url, filename_base):
+
+
+def upload_file(service, folder_id, url, filename_base):
     try:
         response = requests.get(url)
         if response.status_code != 200:
             print(f"❌ Помилка при завантаженні: {url}")
-            return
+            return False
 
-        extension = mimetypes.guess_extension(response.headers.get('content-type', '').split(';')[0]) or '.jpg'
-        full_filename = f"{filename_base}{extension}"
+        ext = mimetypes.guess_extension(response.headers.get('content-type', '').split(';')[0]) or '.jpg'
+        full_filename = f"{filename_base}{ext}"
 
         if file_exists(service, folder_id, full_filename):
             print(f"⏭️ Пропущено (вже існує): {full_filename}")
-            return
+            return False
 
         with open(full_filename, 'wb') as f:
             f.write(response.content)
@@ -85,7 +85,9 @@ def upload_image(service, folder_id, url, filename_base):
             try:
                 service.files().create(body=metadata, media_body=media, fields='id').execute()
                 print(f"✅ Завантажено: {full_filename}")
-                break
+                os.remove(full_filename)
+                time.sleep(1)
+                return True
             except HttpError as error:
                 if error.resp.status in [403, 429]:
                     wait = 2 ** attempt + random.uniform(0, 1)
@@ -95,20 +97,21 @@ def upload_image(service, folder_id, url, filename_base):
                     raise
 
         os.remove(full_filename)
-        time.sleep(1)
-
+        return False
     except Exception as e:
         print(f"❌ Помилка: {e} для {filename_base}")
+        return False
 
-# --- Основна логіка ---
+
 def main():
     service = authenticate()
     df = pd.read_csv('products.csv', delimiter=';')
+    uploaded_count = 0
 
     for index, row in df.iterrows():
-        brand = str(row['Бренд']).strip()
-        article = str(row['Артикул']).strip()
-        name = str(row['Назва']).strip()
+        brand = safe_name(str(row['Бренд']).strip())
+        article = safe_name(str(row['Артикул']).strip())
+        name = safe_name(str(row['Назва']).strip())
         photo_url = str(row['Посилання на фото']).strip()
 
         if not (brand and article and name and photo_url):
@@ -119,7 +122,11 @@ def main():
         folder_id = get_or_create_folder(service, folder_name, ROOT_FOLDER_ID)
 
         filename_base = f"{article}_{name}_{brand}"
-        upload_image(service, folder_id, photo_url, filename_base)
+        if upload_file(service, folder_id, photo_url, filename_base):
+            uploaded_count += 1
+
+    print(f"\n📦 Успішно завантажено {uploaded_count} файл(ів)")
+
 
 if __name__ == '__main__':
     main()
