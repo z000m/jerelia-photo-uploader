@@ -1,0 +1,21 @@
+# Віртуальне середовище
+venv/
+.env/
+
+# Token після авторизації (містить доступ до Google Drive!)
+token.json
+
+# Секрети (не завантажувати в публічний репозиторій)
+credentials.json
+
+# Тимчасові файли
+*.log
+*.tmp
+*.bak
+.DS_Store
+__pycache__/
+*.pyc
+
+# IDE / Editor-specific
+.vscode/
+.idea/
